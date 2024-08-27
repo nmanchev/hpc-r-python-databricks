@@ -185,9 +185,11 @@ display(predictions)
 # MAGIC import requests
 # MAGIC import json
 # MAGIC
-# MAGIC access_token = dbutils.widgets.get("access_token")
 # MAGIC model_uri = dbutils.widgets.get("model_uri")
+# MAGIC if not model_uri:
+# MAGIC     raise ValueError("model_uri not specified. Will not test calling an MLflow model. Stopping execution.")
 # MAGIC
+# MAGIC access_token = dbutils.widgets.get("access_token")
 # MAGIC # Check if access_token is empty
 # MAGIC if not access_token:
 # MAGIC     raise ValueError("access_token is empty. Stopping execution.")
@@ -278,11 +280,7 @@ display(predictions)
 # MAGIC toString(predictions[[1]])
 # MAGIC '''
 # MAGIC
-# MAGIC model_uri = dbutils.widgets.get("model_uri")
+# MAGIC # Run the R code and print the predictions
+# MAGIC predictions = execute(clusterId, context_id, code)
+# MAGIC print(predictions["results"]["data"])
 # MAGIC
-# MAGIC if not model_uri:
-# MAGIC     print("model_uri not specified. Will not test calling an MLflow model.")
-# MAGIC else:
-# MAGIC   # Run the R code and print the predictions
-# MAGIC   predictions = execute(clusterId, context_id, code)
-# MAGIC   print(predictions["results"]["data"])
