@@ -82,9 +82,9 @@ cat("Elapsed minutes:", time.taken)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Next, the R code below fits a Bayesian linear mixed-effects model using the `brms` package to analyze the kidney dataset. The number of parallel chains to run is specified via the `chains` argument.
+# MAGIC Next, the R code below fits a Bayesian linear mixed-effects model using the `brms` package to analyze the kidney dataset. The number of parallel chains to run is specified via the `cores` argument.
 # MAGIC
-# MAGIC For comparison, using a single node with 4 cores x 2 threads each (AMD EPYC 7763 64-Core Processor) should take about 2-3 minutes.
+# MAGIC For comparison, using a single node with 4 cores x 2 threads each (AMD EPYC 7763 64-Core Processor) should take about 3 minutes.
 # MAGIC
 
 # COMMAND ----------
@@ -106,7 +106,8 @@ fit <- brm(
   ),
   warmup = 1000,
   iter = 2000,
-  chains = nthreads,
+  chains = 32,
+  cores = nthreads,
   control = list(adapt_delta = 0.95)
   
 )

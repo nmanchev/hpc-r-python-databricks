@@ -57,7 +57,7 @@ fit <- stan(file = '/dbfs/Users/nikolay.manchev@databricks.com/schools.stan', da
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Finally, let's explore the fitted model and its coefficients.
+# MAGIC Finally, let's explore the results.
 
 # COMMAND ----------
 
