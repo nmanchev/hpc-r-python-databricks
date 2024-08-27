@@ -227,7 +227,3 @@ result = train_xgboost(num_workers=4, use_gpu=False)
 # COMMAND ----------
 
 ray.util.spark.shutdown_ray_cluster()
-
-# COMMAND ----------
-
-

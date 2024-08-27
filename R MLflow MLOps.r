@@ -104,7 +104,7 @@ train_wine_quality <- function(data, alpha, lambda, model_name = "model") {
 
 set.seed(1234)
  
-model_name = "nm-test-model"
+model_name = "nm-wine-model"
  
 ## Run 1
 train_wine_quality(data = wine_quality, alpha = 0.03, lambda = 0.98, model_name)
@@ -186,6 +186,7 @@ display(predictions)
 # MAGIC import json
 # MAGIC
 # MAGIC access_token = dbutils.widgets.get("access_token")
+# MAGIC model_uri = dbutils.widgets.get("model_uri")
 # MAGIC
 # MAGIC # Check if access_token is empty
 # MAGIC if not access_token:
