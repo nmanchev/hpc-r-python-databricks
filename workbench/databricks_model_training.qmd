@@ -27,7 +27,6 @@ sc <- spark_connect(
     cluster_id = "0910-144247-ndhsnkr3",
     version = "14.3",
     method = "databricks_connect",
-    envname = "r-sparklyr-databricks-14.3-3.11.9"
 )
 ```
 
@@ -36,8 +35,8 @@ Inputs
 ```{r}
 
 monitoring_mode <- "enabled"
-model_name <- "dev-xgboost-lending2"
-experiment_name <- "xgboost-lending2-experiment"
+model_name <- "dev-xgboost-lending"
+experiment_name <- "xgboost-lending-experiment"
 ```
 
 Set tracking and experiment
@@ -147,7 +146,7 @@ log_metrics <- function(metrics, estimator = "standard") {
 
 ```
 
-3. Setup function to log model in MLFlow
+3. Setup model saving function
 
 ```{r}
 mlflow_log_model_custom <- function(model, artifact_path, signature = NULL, ...) {
@@ -199,7 +198,7 @@ extract_schema <- function(df) {
 
 
 input_schema <- extract_schema(lendingclub_prep)
-signature <- list(
+signature_list <- list(
   inputs = input_schema,
   outputs = list(list(type = "double"))
   )
@@ -232,7 +231,7 @@ for (i in 1:nrow(grid_search)) {
     fit_model = fit_model
   )
   
-  mlflow_log_model_custom(crated_model, model_name)
+  mlflow_log_model_custom(crated_model, model_name, signature = signature_list)
   
   # Log an attribute importance plot
   fit_model %>%
@@ -248,6 +247,9 @@ for (i in 1:nrow(grid_search)) {
   
 }
 ```
+## Select and register top model
+
+1. Select the best performing model
 
 ```{r}
 runs <- mlflow_search_runs(order_by = "metrics.accuracy")
@@ -263,11 +265,16 @@ model_uri <- paste(runs$artifact_uri[1], model_name, sep = "/")
 experiment_url <- paste0("https://", Sys.getenv("DATABRICKS_HOST"), "/ml/experiments/", runs$experiment_id[1])
 
 # Construct model URI
+message("Top Experiment")
 message(c("run_id        : ", best_run_id))
 message(c("experiment_id : ", runs$experiment_id[1]))
 message(c("Model URI     : ", model_uri))
-cli::cli_text("Top experiment: {.url {experiment_url}}.")
+cli::cli_text("Experiment URL : {.url {experiment_url}}.")
 ```
+## Create and register the model
 
+```{r}
+mlflow_create_model_version(model_name, source = model_uri, run_id = best_run_id)
+```
 
 
