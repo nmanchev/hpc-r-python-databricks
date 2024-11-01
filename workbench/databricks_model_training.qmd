@@ -1,0 +1,280 @@
+---
+title: "Databricks Model Training"
+format: html
+---
+
+## Setup
+
+Before using this script the Python `mlflow` [package must be installed](https://github.com/mlflow/mlflow/tree/master/mlflow/R/mlflow#prerequisites).
+
+```{r}
+#| eval: false
+library(dplyr)
+library(sparklyr)
+library(pysparklyr)
+library(mlflow)
+library(xgboost)
+library(cli)
+library(vip)
+library(dbplyr)
+library(tidymodels)
+```
+
+## Connect to Databricks and Set MLFlow Experiment
+
+```{r}
+sc <- spark_connect(
+    cluster_id = "0910-144247-ndhsnkr3",
+    version = "14.3",
+    method = "databricks_connect",
+)
+```
+
+Inputs
+
+```{r}
+
+monitoring_mode <- "enabled"
+model_name <- "dev-xgboost-lending"
+experiment_name <- "xgboost-lending-experiment"
+```
+
+Set tracking and experiment
+
+```{r}
+mlflow_set_tracking_uri("databricks://workbench")
+mlflow_set_experiment(experiment_name = paste0("/Users/trevor.nederlof@posit.co/", experiment_name))
+```
+
+## Get sample of data
+
+1.  Create a pointer to the `lending_club` data. It is in the `default`
+    schema, inside the `posit_demo` catalog. And name it
+    `lendingclub_data`
+
+```{r}
+lendingclub_data <- tbl(sc, in_catalog("posit_demo", "default", "lending_club")) 
+lendingclub_data
+```
+
+2.  Keep only `int_rate`, `term`, `bc_util`, `bc_open_to_buy` and
+    `all_util` fields. Using `slice_sample()`, download 10K records, and name it
+    `lendingclub_sample`
+
+```{r}
+lendingclub_sample <- lendingclub_data |>  
+  slice_sample(n = 10000) |> 
+  select(int_rate, term, bc_util, bc_open_to_buy, all_util) |> 
+  collect()
+lendingclub_sample
+```
+
+3.  Remove the percent sign out of `int_rate`, and
+    coerce it to numeric. Save resulting table to a new variable called
+    `lendingclub_prep`
+
+```{r}
+lendingclub_prep <- lendingclub_sample |> 
+  mutate(
+    int_rate = as.numeric(stringr::str_remove(int_rate, "%"))
+    ) |>
+  filter(!is.na(int_rate))
+lendingclub_prep
+```
+
+5.  Preview the data using `glimpse()`
+
+```{r}
+glimpse(lendingclub_prep)
+```
+
+6.  Disconnect from Spark
+
+```{r}
+spark_disconnect(sc)
+```
+
+
+## Create model using `tidymodels`
+
+1.  Run the following code to create a `workflow` that contains the
+    pre-processing steps, and an xgboost regression model.
+    We'll also use `tune()` to flag a few hyperparameters for tuning
+
+```{r}
+lendingclub_rec <- recipe(int_rate ~ ., data = lendingclub_prep) |> 
+  step_mutate(across(all_of(c("bc_open_to_buy", "bc_util", "all_util")), as.numeric)) |> 
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(term) |>
+  step_impute_mean(all_of(c("bc_open_to_buy", "bc_util", "all_util")))
+
+lendingclub_lr <- boost_tree(trees = tune()) |>
+  set_engine("xgboost") |>
+  set_mode("regression")
+
+lendingclub_wf <- workflow() |> 
+  add_model(lendingclub_lr) |> 
+  add_recipe(lendingclub_rec)
+```
+
+2. Create a function to log all metrics, parameters and model objects to mlflow.
+
+```{r}
+log_workflow_parameters <- function(workflow) {
+  spec <- workflows::extract_spec_parsnip(workflow)
+  parameter_names <- names(spec$args)
+  parameter_values <- lapply(spec$args, rlang::get_expr)
+  for (i in seq_along(spec$args)) {
+    parameter_name <- parameter_names[[i]]
+    parameter_value <- parameter_values[[i]]
+    if (!is.null(parameter_value)) {
+      mlflow_log_param(parameter_name, parameter_value)
+    }
+  }
+  mlflow_log_param("engine", spec$engine)
+  workflow
+}
+
+log_metrics <- function(metrics, estimator = "standard") {
+  metrics |> filter(.estimator == estimator) |> pmap(
+    function(.metric, .estimator, .estimate) {
+      mlflow_log_metric(.metric, .estimate)  
+    }
+  )
+  metrics
+}
+
+```
+
+3. Setup model saving function
+
+```{r}
+mlflow_log_model_custom <- function(model, artifact_path, signature = NULL, ...) {
+  
+  format_signature <- function(signature) {
+    lapply(signature, function(x) {
+      jsonlite::toJSON(x, auto_unbox = TRUE)
+    })
+  }
+  
+  temp_path <- fs::path_temp(artifact_path)
+  
+  model_spec <- mlflow_save_model(model, path = temp_path, model_spec = list(
+    utc_time_created = mlflow:::mlflow_timestamp(),
+    run_id = mlflow:::mlflow_get_active_run_id_or_start_run(),
+    artifact_path = artifact_path, 
+    flavors = list(),
+    signature = format_signature(signature)
+  ), ...)
+  
+  res <- mlflow_log_artifact(path = temp_path, artifact_path = artifact_path)
+  
+  tryCatch({
+    mlflow:::mlflow_record_logged_model(model_spec)
+  },
+  error = function(e) {
+    warning(
+      paste("Logging model metadata to the tracking server has failed, possibly due to older",
+            "server version. The model artifacts have been logged successfully.",
+            "In addition to exporting model artifacts, MLflow clients 1.7.0 and above",
+            "attempt to record model metadata to the  tracking store. If logging to a",
+            "mlflow server via REST, consider  upgrading the server version to MLflow",
+            "1.7.0 or above.", sep=" ")
+    )
+  })
+  res
+}
+```
+
+4. Setup schema
+
+```{r}
+extract_schema <- function(df) {
+  schema <- lapply(names(df), function(col_name) {
+    list(type = typeof(df[[col_name]])[1], name = col_name)
+  })
+  return(schema)
+}
+
+
+input_schema <- extract_schema(lendingclub_prep)
+signature_list <- list(
+  inputs = input_schema,
+  outputs = list(list(type = "double"))
+  )
+```
+
+## Model training
+
+5. Grid search over the candidate parameters, and log results to MLFlow
+
+```{r}
+grid_search <- expand_grid(trees = seq(100, 300, by = 50))
+
+
+for (i in 1:nrow(grid_search)) {
+  mlflow_start_run()
+  
+  fit_model <- lendingclub_wf |>
+    finalize_workflow(grid_search[i,]) |>
+    log_workflow_parameters() |>
+    fit(lendingclub_prep)
+  
+  preds <- fit_model |>
+    augment(lendingclub_prep)
+  
+  metrics <- metric_set(rmse, mae, rsq)(preds, int_rate, .pred) |>
+    log_metrics()
+  
+  crated_model <- carrier::crate(
+    function(x) workflows:::predict.workflow(fit_model, x),
+    fit_model = fit_model
+  )
+  
+  mlflow_log_model_custom(crated_model, model_name, signature = signature_list)
+  
+  # Log an attribute importance plot
+  fit_model %>%
+    extract_fit_parsnip() %>%
+    vip()
+  ggsave("attribute_importance.png", width = 400, height = 600, units = "px")
+    
+  mlflow_log_artifact("attribute_importance.png")
+  
+  unlink("attribute_importance.png")
+  
+  mlflow_end_run()
+  
+}
+```
+## Select and register top model
+
+1. Select the best performing model
+
+```{r}
+runs <- mlflow_search_runs(order_by = "metrics.accuracy")
+
+# Assuming the first run is the best model according to r^2
+best_run_id <- runs$run_id[1]
+
+# Construct model URI
+model_uri <- paste0("runs:/", best_run_id, "/model")
+model_uri <- paste(runs$artifact_uri[1], model_name, sep = "/")
+
+# Construct url to experiment
+experiment_url <- paste0("https://", Sys.getenv("DATABRICKS_HOST"), "/ml/experiments/", runs$experiment_id[1])
+
+# Construct model URI
+message("Top Experiment")
+message(c("run_id        : ", best_run_id))
+message(c("experiment_id : ", runs$experiment_id[1]))
+message(c("Model URI     : ", model_uri))
+cli::cli_text("Experiment URL : {.url {experiment_url}}.")
+```
+## Create and register the model
+
+```{r}
+mlflow_create_model_version(model_name, source = model_uri, run_id = best_run_id)
+```
+
+
